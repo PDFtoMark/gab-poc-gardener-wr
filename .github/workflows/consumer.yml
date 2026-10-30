@@ -1,0 +1,81 @@
+name: Gardener - Notify Slack
+on:
+  workflow_run:
+    workflows: ['Gardener - Notify Event']
+    types: [completed]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+  actions: read
+
+jobs:
+  notify:
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download event payload
+        id: download
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: gardener-event
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Show trusted payload and derived Slack message
+        if: steps.download.outcome == 'success'
+        run: |
+          echo "=== event.json (supplied by upstream artifact) ==="
+          cat event.json
+          ACTION=$(jq -r '.action' event.json)
+          NUMBER=$(jq -r '(.issue // .pull_request).number' event.json)
+          echo "ACTION=$ACTION NUMBER=$NUMBER"
+          KIND=$(jq -r 'if has("pull_request") then "PR" else "Issue" end' event.json)
+          BODY=$(jq -r '(.issue // .pull_request).body // ""' event.json)
+          if [ ${#BODY} -gt 1000 ]; then
+            BODY="${BODY:0:1000}…"
+          fi
+          BODY=$(printf '%s' "$BODY" | perl -0777 -pe '
+            my @u;
+            s{\[([^\]]+)\]\(([^)]+)\)}{push @u, $2; "\x01$#u\x02$1\x03"}ge;
+            my @c;
+            s{^```[^\n]*\n(.*?)\n```$}{push @c, $1; "\x04$#c\x05"}gems;
+            s/^> /\x06/gm;
+            s/^#{1,6}\s+(.+)$/*$1*/gm;
+            s/\*\*(.+?)\*\*/*$1*/g;
+            s/^(\s*)- \[x\]\s+/$1✓ /gm;
+            s/^(\s*)[-*]\s+/$1• /gm;
+            s/&/&amp;/g;
+            s/</&lt;/g;
+            s/>/&gt;/g;
+            s/\x06/> /g;
+            s{\x01(\d+)\x02(.*?)\x03}{"<$u[$1]|$2>"}ge;
+            s{\x04(\d+)\x05}{"```\n$c[$1]\n```"}ge;
+          ')
+          jq \
+            --arg channel "C0INTERNAL" \
+            --arg kind "$KIND" \
+            --arg body "$BODY" \
+            '
+              def escape: gsub("&";"&amp;") | gsub("<";"&lt;") | gsub(">";"&gt;");
+
+              (.issue // .pull_request) as $i
+              | ([$i.labels[]?.name | select(. != "devtools-gardener")]
+                  | map("`\(.)`") | join(" ")) as $labels
+              | (if $kind == "PR"
+                  then " · \($i.changed_files) files, +\($i.additions)/-\($i.deletions)"
+                       + (if $i.draft then " · draft" else "" end)
+                  else "" end) as $meta
+              | [ "*<\($i.html_url)|\($kind) #\($i.number)>* — \(($i.title | escape))",
+                  "_opened by \($i.user.login)\($meta)_" ]
+                + (if $body != "" then [$body] else [] end)
+                + (if $labels != "" then [$labels] else [] end)
+              | join("\n") as $msg
+              | { channel: $channel, text: "\($kind) #\($i.number): \($i.title)",
+                  blocks: [{ type: "section", text: { type: "mrkdwn", text: $msg } }] }
+            ' event.json > payload.json
+          echo "=== slack payload that would be POSTed with SLACK_GARDENER_BOT_TOKEN ==="
+          cat payload.json
+          { echo "## Derived Slack payload (would be posted by trusted bot)"; echo '```json'; cat payload.json; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
